@@ -1,0 +1,18 @@
+# Credentials — never commit. Bluesky app passwords live here.
+.env
+
+# Game state and logs are per-machine runtime data.
+# The -wal/-shm files come from SQLite's WAL mode.
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# macOS
+.DS_Store

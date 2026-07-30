@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.battleship.bot</string>
+
+    <!-- EDIT: absolute path to your python3 and to main.py -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/ABSOLUTE/PATH/TO/battleship-bot/main.py</string>
+    </array>
+
+    <!-- EDIT: project root (where .env lives) -->
+    <key>WorkingDirectory</key>
+    <string>/ABSOLUTE/PATH/TO/battleship-bot</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- EDIT: match LOG_PATH in your .env -->
+    <key>StandardOutPath</key>
+    <string>/ABSOLUTE/PATH/TO/battleship.log</string>
+    <key>StandardErrorPath</key>
+    <string>/ABSOLUTE/PATH/TO/battleship.log</string>
+</dict>
+</plist>

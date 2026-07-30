@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.battleship.dashboard</string>
+
+    <!-- EDIT: absolute path to your python3 and to dashboard.py -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/ABSOLUTE/PATH/TO/battleship-bot/dashboard.py</string>
+    </array>
+
+    <!-- EDIT: project root (where .env lives) -->
+    <key>WorkingDirectory</key>
+    <string>/ABSOLUTE/PATH/TO/battleship-bot</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- EDIT: a separate log from the bot's, so they don't interleave -->
+    <key>StandardOutPath</key>
+    <string>/ABSOLUTE/PATH/TO/dashboard.log</string>
+    <key>StandardErrorPath</key>
+    <string>/ABSOLUTE/PATH/TO/dashboard.log</string>
+</dict>
+</plist>
