@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS game_state (
     red_last_post_uri TEXT,
     blue_last_post_uri TEXT,
     log_last_post_uri TEXT,
+    red_vote_options TEXT,
+    blue_vote_options TEXT,
     last_shot_team TEXT,
     last_shot_coord TEXT,
     last_shot_result TEXT,
@@ -89,6 +91,8 @@ _ADDED_COLUMNS = {
         ("last_shot_coord", "TEXT"),
         ("last_shot_result", "TEXT"),
         ("last_shot_ship", "TEXT"),
+        ("red_vote_options", "TEXT"),
+        ("blue_vote_options", "TEXT"),
     ],
 }
 
@@ -153,9 +157,10 @@ def save_state(state: GameState) -> None:
                 id, game_id, active_team, turn_number, status,
                 red_grid, blue_grid, red_ships, blue_ships,
                 red_last_post_uri, blue_last_post_uri, log_last_post_uri,
+                red_vote_options, blue_vote_options,
                 last_shot_team, last_shot_coord, last_shot_result,
                 last_shot_ship, updated_at
-            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                       CURRENT_TIMESTAMP)
             ON CONFLICT(id) DO UPDATE SET
                 game_id=excluded.game_id,
@@ -169,6 +174,8 @@ def save_state(state: GameState) -> None:
                 red_last_post_uri=excluded.red_last_post_uri,
                 blue_last_post_uri=excluded.blue_last_post_uri,
                 log_last_post_uri=excluded.log_last_post_uri,
+                red_vote_options=excluded.red_vote_options,
+                blue_vote_options=excluded.blue_vote_options,
                 last_shot_team=excluded.last_shot_team,
                 last_shot_coord=excluded.last_shot_coord,
                 last_shot_result=excluded.last_shot_result,
@@ -187,6 +194,8 @@ def save_state(state: GameState) -> None:
                 state.red_last_post_uri,
                 state.blue_last_post_uri,
                 state.log_last_post_uri,
+                json.dumps(state.red_vote_options),
+                json.dumps(state.blue_vote_options),
                 state.last_shot_team,
                 state.last_shot_coord,
                 state.last_shot_result,
@@ -222,6 +231,16 @@ def load_state() -> GameState | None:
         except (IndexError, KeyError):
             return ""
 
+    def _json_list(name: str) -> list:
+        raw = _col(name)
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        return data if isinstance(data, list) else []
+
     return GameState(
         game_id=row["game_id"],
         active_team=row["active_team"],
@@ -234,6 +253,8 @@ def load_state() -> GameState | None:
         red_last_post_uri=_col("red_last_post_uri"),
         blue_last_post_uri=_col("blue_last_post_uri"),
         log_last_post_uri=_col("log_last_post_uri"),
+        red_vote_options=_json_list("red_vote_options"),
+        blue_vote_options=_json_list("blue_vote_options"),
         last_shot_team=_col("last_shot_team"),
         last_shot_coord=_col("last_shot_coord"),
         last_shot_result=_col("last_shot_result"),

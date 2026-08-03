@@ -301,6 +301,7 @@ def delete_posts(team: str, rkeys: list, on_progress=None) -> tuple:
 # letter (so "sea5" doesn't match) and not followed by another digit (so
 # "A55" and the "A1" inside "A100" don't match).
 _COORD_RE = re.compile(r"(?<![A-Za-z])([A-Ja-j])\s?[-,]?\s?(10|[1-9])(?!\d)")
+_OPTION_RE = re.compile(r"^\s*([ABCabc])(?:\s*$|[\s).:-])")
 
 
 def parse_coordinate(text: str) -> tuple | None:
@@ -309,6 +310,23 @@ def parse_coordinate(text: str) -> tuple | None:
     if not match:
         return None
     return match.group(1).upper(), int(match.group(2))
+
+
+def parse_vote_text(text: str, options: dict | None = None) -> tuple | None:
+    """Extract a vote as a coordinate.
+
+    Direct coordinates still work, but when a post offers A/B/C choices a
+    reply of just "B" maps to that option's coordinate.
+    """
+    coord = parse_coordinate(text)
+    if coord is not None:
+        return coord
+    if not options:
+        return None
+    match = _OPTION_RE.search(text or "")
+    if not match:
+        return None
+    return options.get(match.group(1).upper())
 
 
 @dataclass
@@ -322,20 +340,22 @@ class VoteResult:
     caller_cid: str = ""
     root_uri: str = ""      # thread root, for a well-formed reply
     root_cid: str = ""
+    choice_label: str = ""  # A/B/C when the winning vote used a choice
 
 
 def _created_at(reply) -> str:
     return getattr(getattr(reply, "record", None), "created_at", "") or ""
 
 
-def collect_votes(replies: list, already_fired: set) -> tuple:
+def collect_votes(replies: list, already_fired: set,
+                  options: dict | None = None) -> tuple:
     """Reduce replies to valid votes: (votes_by_did, first_reply_by_coord).
 
     `already_fired` holds ('A', 5)-style tuples. Replies are processed
     oldest first, so a voter's earliest reply is their vote and the
     follower recorded against a coordinate is whoever called it first.
     """
-    votes, first = {}, {}
+    votes, first, labels = {}, {}, {}
     for reply in sorted(replies, key=_created_at):
         try:
             did = reply.author.did
@@ -344,41 +364,49 @@ def collect_votes(replies: list, already_fired: set) -> tuple:
             continue
         if did in votes:
             continue
-        coord = parse_coordinate(text)
+        coord = parse_vote_text(text, options)
         if coord is None or coord in already_fired:
             continue
         votes[did] = coord
         first.setdefault(coord, reply)
-    return votes, first
+        for label, option_coord in (options or {}).items():
+            if coord == option_coord:
+                labels.setdefault(coord, label)
+                break
+    return votes, first, labels
 
 
-def vote_breakdown(replies: list, already_fired: set) -> list:
+def vote_breakdown(replies: list, already_fired: set,
+                   options: dict | None = None) -> list:
     """Every coordinate currently voted for, most votes first.
 
     Same reduction as tally_votes, exposed for the dashboard's live view
     so the two can never disagree about the standings.
     """
-    votes, first = collect_votes(replies, already_fired)
+    votes, first, labels = collect_votes(replies, already_fired, options)
     out = []
     for coord, count in Counter(votes.values()).most_common():
         caller = first.get(coord)
         out.append({
             "coord": f"{coord[0]}{coord[1]}",
             "votes": count,
+            "choice": labels.get(coord, ""),
             "first_caller": (getattr(getattr(caller, "author", None), "handle", "")
                              if caller else ""),
         })
     return out
 
 
-def tally_votes(replies: list, already_fired: set) -> VoteResult | None:
+def tally_votes(replies: list, already_fired: set,
+                options: dict | None = None) -> VoteResult | None:
     """The winning coordinate, or None when no valid votes were cast."""
-    votes, first = collect_votes(replies, already_fired)
+    votes, first, labels = collect_votes(replies, already_fired, options)
     if not votes:
         return None
 
     coord, count = Counter(votes.values()).most_common(1)[0]
     result = VoteResult(coord=coord, count=count, total_voters=len(votes))
+    result.choice_label = labels.get(coord, "")
 
     caller = first.get(coord)
     if caller is not None:

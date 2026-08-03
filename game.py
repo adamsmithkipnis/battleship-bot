@@ -36,6 +36,8 @@ class GameState:
     red_last_post_uri: str = ""
     blue_last_post_uri: str = ""
     log_last_post_uri: str = ""
+    red_vote_options: list = field(default_factory=list)   # ['A1', 'B2', ...]
+    blue_vote_options: list = field(default_factory=list)
     # The most recent shot in the game. Teams post on alternating ticks,
     # so a team's post has to report the opponent's shot from the tick
     # before it — that's what these carry across ticks.

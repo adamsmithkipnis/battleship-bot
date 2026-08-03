@@ -6,9 +6,9 @@ fires and only that team posts, so each account posts once every
 TURN_MINUTES and each side gets an equal voting window.
 
 Every tick: read votes from the acting team's latest post, fire the
-most-voted coordinate (AI fallback if no valid votes), credit the follower
-who called it, and post a terse summary to the battlelog account. A weekly
-leaderboard runs from battlelog.
+most-voted coordinate (AI fallback if no valid votes), and credit the
+follower who called it. The battlelog account posts only completed game
+results.
 """
 
 from __future__ import annotations
@@ -29,18 +29,21 @@ import game
 from game import GameState, HIT, MISS
 import renderer
 
+load_dotenv()
+
 logger = logging.getLogger("battleship")
 
 # Minutes between a given team's own turns. Teams alternate on half of
 # this, so each account posts every TURN_MINUTES and the two accounts are
 # offset from each other by TURN_MINUTES / 2.
-TURN_MINUTES = int(os.environ.get("TURN_MINUTES", "10"))
+TURN_MINUTES = int(os.environ.get("TURN_MINUTES", "60"))
 TICK_SECONDS = TURN_MINUTES * 60 // 2
 
 HASHTAG = "#Battleship"
 EMOJI = {"red": "🔴", "blue": "🔵"}
 HANDLE = {"red": "@battleshipred", "blue": "@battleshipblue"}
 TEAM_NAME = {"red": "Team Red", "blue": "Team Blue"}
+OPTION_LABELS = "ABC"
 
 scheduler = BlockingScheduler()
 
@@ -59,6 +62,24 @@ def _record_line() -> str:
             f"🔵 {rec['blue']['wins']}W {rec['blue']['losses']}L")
 
 
+def _format_options(options: list) -> str:
+    return "\n".join(
+        f"{label}) {coord}"
+        for label, coord in zip(OPTION_LABELS, options)
+    )
+
+
+def _choice_map(options: list) -> dict:
+    return {
+        label: _coord_from_text(coord)
+        for label, coord in zip(OPTION_LABELS, options)
+    }
+
+
+def _coord_from_text(coord: str) -> tuple:
+    return coord[0], int(coord[1:])
+
+
 def _credit_line(vote) -> str:
     """Tell followers whether the crowd or the AI picked this shot.
 
@@ -68,7 +89,8 @@ def _credit_line(vote) -> str:
     if vote is None:
         return "🤖 No votes came in — we auto-fired."
     if vote.caller_handle:
-        return (f"🎯 Called by @{vote.caller_handle} "
+        choice = f" option {vote.choice_label}," if vote.choice_label else ""
+        return (f"🫡 @{vote.caller_handle} took command:{choice} "
                 f"({vote.count} of {vote.total_voters} votes)")
     return f"🎯 Crowd pick: {vote.count} of {vote.total_voters} votes"
 
@@ -89,7 +111,8 @@ def build_incoming_line(opponent: str, coord: str, result: str,
 
 
 def build_turn_text(team: str, turn: int, coord: str, result: str,
-                    sunk_ship: str | None, vote, incoming: str = "") -> str:
+                    sunk_ship: str | None, vote, options: list,
+                    incoming: str = "") -> str:
     """The acting team's post: what happened to us, then our shot."""
     if result == "miss":
         own = f"We fired {coord} — Miss."
@@ -100,28 +123,10 @@ def build_turn_text(team: str, turn: int, coord: str, result: str,
 
     head = f"Turn {turn} {EMOJI[team]} "
     body = f"{head}{incoming}\n{own}" if incoming else f"{head}{own}"
-    return (f"{body}\n{_credit_line(vote)}\n"
-            f"Reply a coord to vote our next shot (e.g. D4). "
+    return (f"{body}\n{_credit_line(vote)}\n\n"
+            f"Next shot — reply A, B, or C:\n"
+            f"{_format_options(options)}\n"
             f"{TURN_MINUTES} min. {HASHTAG}")
-
-
-def build_log_text(firing_team: str, turn: int, coord: str, result: str,
-                   sunk_ship: str | None, vote) -> str:
-    """Terse neutral battlelog summary for one turn."""
-    if result == "miss":
-        outcome = "Miss."
-    else:
-        outcome = "HIT" + (f" — {sunk_ship} sunk!" if sunk_ship else "")
-    if vote is None:
-        credit = "No votes — AI shot."
-    elif vote.caller_handle:
-        credit = (f"Called by @{vote.caller_handle} "
-                  f"({vote.count} of {vote.total_voters} votes)")
-    else:
-        credit = f"Crowd pick ({vote.count} of {vote.total_voters} votes)"
-    return (f"Turn {turn} | {HANDLE[firing_team]} fires {coord} — {outcome}\n"
-            f"{credit}\n"
-            f"{HANDLE[_opponent(firing_team)]} to respond. {HASHTAG}")
 
 
 def build_credit_reply(coord: str, result: str, sunk_ship: str | None,
@@ -133,7 +138,8 @@ def build_credit_reply(coord: str, result: str, sunk_ship: str | None,
         outcome = f"a HIT — you sank their {sunk_ship}!"
     else:
         outcome = "a HIT!"
-    return (f"🎯 Your call. We fired {coord} on turn {turn} — {outcome}\n\n"
+    choice = f" option {vote.choice_label}" if vote.choice_label else ""
+    return (f"🎯 Your call{choice}. We fired {coord} on turn {turn} — {outcome}\n\n"
             f"({vote.count} of {vote.total_voters} votes) {HASHTAG}")
 
 
@@ -151,27 +157,6 @@ def build_log_win_text(winner: str, turns: int, game_id: int) -> str:
             f"{HANDLE[winner]} wins.\n\n"
             f"All-time: {_record_line()}\n\n"
             f"Next game in 1 hour. {HASHTAG}")
-
-
-def build_leaderboard_text(entries: list, days: int = 7) -> str:
-    """Weekly top-callers roundup, assembled to fit the post limit."""
-    header = f"📊 TOP GUNNERS — last {days} days\n"
-    footer = (f"\nReply a coordinate on @battleshipred or @battleshipblue "
-              f"to get on the board. {HASHTAG}")
-    def plural(n: int, word: str) -> str:
-        return f"{n} {word}" if n == 1 else f"{n} {word}s"
-
-    lines = []
-    budget = bluesky.POST_LIMIT - len(header) - len(footer)
-    for i, entry in enumerate(entries, 1):
-        bits = [f"{entry['sinks']} sunk"] if entry["sinks"] else []
-        bits.append(plural(entry["hits"], "hit"))
-        bits.append(plural(entry["calls"], "shot"))
-        line = f"{i}. @{entry['handle']} — {', '.join(bits)}"
-        if len("\n".join(lines + [line])) > budget:
-            break
-        lines.append(line)
-    return header + "\n".join(lines) + footer
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +181,26 @@ def _render_for(state: GameState, team: str) -> tuple:
     alt = renderer.build_alt_text(own, own_ships, firing, opp_ships,
                                   state.turn_number)
     return png, alt
+
+
+def _shot_options(state: GameState, team: str) -> list:
+    """Three legal coordinates for the team's followers to vote on."""
+    _, _, firing, opp_ships = _views(state, team)
+    return [
+        game.index_to_coord(r, c)
+        for r, c in ai.choose_options(firing, opp_ships, len(OPTION_LABELS))
+    ]
+
+
+def _vote_options_for(state: GameState, team: str) -> list:
+    return state.red_vote_options if team == "red" else state.blue_vote_options
+
+
+def _set_vote_options(state: GameState, team: str, options: list) -> None:
+    if team == "red":
+        state.red_vote_options = options
+    else:
+        state.blue_vote_options = options
 
 
 def _already_fired(state: GameState, team: str) -> set:
@@ -272,11 +277,13 @@ def _game_tick() -> None:
     opponent = _opponent(team)
     vote_uri = (state.red_last_post_uri if team == "red"
                 else state.blue_last_post_uri)
+    vote_options = _vote_options_for(state, team)
 
     # 1. Collect and tally votes from the acting team's latest post — the
     #    post that has been up for TURN_MINUTES asking for exactly this.
     vote = bluesky.tally_votes(_fetch_replies(vote_uri),
-                               _already_fired(state, team))
+                               _already_fired(state, team),
+                               options=_choice_map(vote_options))
 
     if vote is not None:
         row_letter, col = vote.coord
@@ -285,10 +292,15 @@ def _game_tick() -> None:
                     team, row_letter, col, vote.count, vote.total_voters,
                     vote.caller_handle or "unknown")
     else:
-        _, _, firing_view, opp_ships = _views(state, team)
-        r, c = ai.choose_move(firing_view, opp_ships)
-        logger.info("Team %s move by AI fallback: %s", team,
-                    game.index_to_coord(r, c))
+        if vote_options:
+            r, c = game.coord_to_index(*_coord_from_text(vote_options[0]))
+            logger.info("Team %s move by AI fallback option A: %s", team,
+                        vote_options[0])
+        else:
+            _, _, firing_view, opp_ships = _views(state, team)
+            r, c = ai.choose_move(firing_view, opp_ships)
+            logger.info("Team %s move by AI fallback: %s", team,
+                        game.index_to_coord(r, c))
 
     coord = game.index_to_coord(r, c)
     turn = state.turn_number
@@ -347,21 +359,21 @@ def _game_tick() -> None:
                 else:
                     state.blue_last_post_uri = uri
             log_text = build_log_win_text(team, turn, state.game_id)
+            state.log_last_post_uri = _post_text("log", log_text, "win",
+                                                 state.game_id, turn,
+                                                 extra_dids=extra)
         else:
+            next_options = _shot_options(state, team)
+            _set_vote_options(state, team, next_options)
             img, alt = _render_for(state, team)
             text = build_turn_text(team, turn, coord, result, sunk_ship,
-                                   vote, incoming)
+                                   vote, next_options, incoming)
             uri = _post_image(team, text, img, alt, "turn", state.game_id,
                               turn, extra_dids=extra)
             if team == "red":
                 state.red_last_post_uri = uri
             else:
                 state.blue_last_post_uri = uri
-            log_text = build_log_text(team, turn, coord, result, sunk_ship, vote)
-
-        state.log_last_post_uri = _post_text("log", log_text, "log",
-                                             state.game_id, turn,
-                                             extra_dids=extra)
     except Exception:
         logger.exception("Posting failed; skipping turn (state not saved)")
         return
@@ -419,22 +431,21 @@ def _start_new_game() -> None:
     logger.info("Starting game %d", game_id)
 
     record_line = _record_line()
+    state.red_vote_options = _shot_options(state, "red")
+    state.blue_vote_options = _shot_options(state, "blue")
 
     # Both accounts open the game: each needs a post of its own for its
     # followers to reply to. From here on they alternate.
     def opening_text(team: str) -> str:
         first = ("We fire first." if team == "red"
                  else f"{HANDLE['red']} fires first.")
+        options = _vote_options_for(state, team)
         return (f"⚓ NEW GAME — @battleshipred vs @battleshipblue!\n\n"
                 f"Ships are placed. {first}\n\n"
                 f"All-time: {record_line}\n\n"
-                f"Reply a coordinate (e.g. B7) to vote for our shots. "
+                f"First shot — reply A, B, or C:\n"
+                f"{_format_options(options)}\n"
                 f"{HASHTAG}")
-
-    log_text = (f"⚓ GAME {game_id} UNDERWAY\n"
-                f"@battleshipred vs @battleshipblue\n"
-                f"@battleshipred fires first.\n\n"
-                f"All-time: {record_line} {HASHTAG}")
 
     try:
         red_img, red_alt = _render_for(state, "red")
@@ -444,32 +455,12 @@ def _start_new_game() -> None:
         state.blue_last_post_uri = _post_image(
             "blue", opening_text("blue"), blue_img, blue_alt, "newgame",
             game_id, 1)
-        state.log_last_post_uri = _post_text("log", log_text, "newgame",
-                                             game_id, 1)
     except Exception:
         logger.exception("Failed to post new-game announcements")
         # Save anyway so the game exists; the next tick can still fire
         # (the AI fallback runs when there are no posts to read votes from).
 
     db.save_state(state)
-
-
-def post_leaderboard() -> None:
-    """Weekly top-callers roundup from the battlelog account."""
-    try:
-        entries = db.get_leaderboard(days=7, limit=5)
-        if not entries:
-            logger.info("No voter calls in the last 7 days; skipping leaderboard")
-            return
-        text = build_leaderboard_text(entries, days=7)
-        # Pass every DID so each handle on the board is clickable.
-        extra = {e["handle"]: e["did"] for e in entries if e.get("handle")}
-        state = db.load_state()
-        _post_text("log", text, "leaderboard",
-                   state.game_id if state else 0, extra_dids=extra)
-        logger.info("Posted leaderboard with %d entries", len(entries))
-    except Exception:
-        logger.exception("post_leaderboard failed")
 
 
 # ---------------------------------------------------------------------------
@@ -516,10 +507,8 @@ def main() -> None:
 
     scheduler.add_job(game_tick, "interval", seconds=TICK_SECONDS,
                       id="game_tick", coalesce=True, max_instances=1)
-    scheduler.add_job(post_leaderboard, "cron", day_of_week="sun", hour=18,
-                      minute=0, id="leaderboard", coalesce=True)
     logger.info("Scheduler started; one team acts every %d seconds "
-                "(each team every %d min), leaderboard Sundays at 18:00",
+                "(each team every %d min); battlelog posts game results only",
                 TICK_SECONDS, TURN_MINUTES)
     scheduler.start()
 

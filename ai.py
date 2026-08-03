@@ -54,6 +54,45 @@ def choose_move(firing_grid: list, opponent_ships: list) -> tuple:
     return random.choice(unexplored)
 
 
+def choose_options(firing_grid: list, opponent_ships: list, count: int = 3) -> list:
+    """Pick distinct candidate shots for followers to vote on.
+
+    The first option follows the same strategy as the AI fallback. Remaining
+    options add a little variety while still avoiding cells already fired at.
+    """
+    sunk_cells = set()
+    for ship in opponent_ships:
+        if ship.get("sunk"):
+            sunk_cells.update(tuple(c) for c in ship["cells"])
+
+    active_hits = [
+        (r, c)
+        for r in range(SIZE)
+        for c in range(SIZE)
+        if firing_grid[r][c] == HIT and (r, c) not in sunk_cells
+    ]
+
+    priority = []
+    if active_hits:
+        priority = _target_candidates(firing_grid, active_hits)
+
+    unexplored = [
+        (r, c)
+        for r in range(SIZE)
+        for c in range(SIZE)
+        if firing_grid[r][c] == WATER
+    ]
+    random.shuffle(unexplored)
+
+    out = []
+    for coord in priority + unexplored:
+        if coord not in out:
+            out.append(coord)
+        if len(out) >= count:
+            break
+    return out
+
+
 def _target_candidates(firing_grid: list, hits: list) -> list:
     """Unexplored cells worth shooting given the active hits."""
     # If >= 2 hits share a row or column, the ship's orientation is known:
