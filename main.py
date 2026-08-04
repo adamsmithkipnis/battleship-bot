@@ -461,10 +461,19 @@ def _start_new_game() -> None:
 # ---------------------------------------------------------------------------
 
 def setup_logging() -> None:
-    handlers = [logging.StreamHandler(sys.stdout)]
+    """Log to LOG_PATH, and additionally to the screen when interactive.
+
+    launchd redirects stdout into the same file named by LOG_PATH, so
+    adding a stdout handler on top of the file handler writes every line
+    twice. stdout is a TTY only when running in the foreground, which is
+    exactly when the screen echo is wanted.
+    """
+    handlers = []
     log_path = os.environ.get("LOG_PATH")
     if log_path:
         handlers.append(logging.FileHandler(log_path))
+    if not handlers or sys.stdout.isatty():
+        handlers.append(logging.StreamHandler(sys.stdout))
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
