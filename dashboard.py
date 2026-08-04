@@ -39,7 +39,7 @@ app = Flask(__name__)
 
 SERVICE = "com.battleship.bot"
 PUBLIC_API = "https://public.api.bsky.app/xrpc/"
-TURN_MINUTES = int(os.environ.get("TURN_MINUTES", "10"))
+TURN_MINUTES = int(os.environ.get("TURN_MINUTES", "60"))
 TICK_SECONDS = TURN_MINUTES * 60 // 2
 
 _http = httpx.Client(timeout=15)
@@ -86,6 +86,22 @@ def _parse_utc(value: str):
     return None
 
 
+def _json_list(row, name: str) -> list:
+    """Read a JSON list column, tolerating NULL or malformed values."""
+    import json
+    try:
+        raw = row[name]
+    except (IndexError, KeyError):
+        return []
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return data if isinstance(data, list) else []
+
+
 def read_state() -> dict:
     """Current game plus record and post counts, from a read-only handle."""
     conn = db.connect_readonly()
@@ -128,6 +144,7 @@ def read_state() -> dict:
             "vote_post_uri": (row["red_last_post_uri"]
                               if row["active_team"] == "red"
                               else row["blue_last_post_uri"]),
+            "vote_options": _json_list(row, f"{row['active_team']}_vote_options"),
             "record": record,
             "games_played": games,
             "posts": posts,
@@ -195,9 +212,19 @@ def live_votes(state: dict) -> dict:
                  for r in range(game.SIZE) for c in range(game.SIZE)
                  if grid[r][c] in (game.HIT, game.MISS)}
 
-    breakdown = bluesky.vote_breakdown(replies, fired)
+    # Map the offered letters to coordinates so a reply of "B" counts here
+    # exactly as it will when the bot tallies at the end of the window.
+    offered = state.get("vote_options") or []
+    choice_map = {label: game.coord_from_string(coord)
+                  for label, coord in zip("ABC", offered)}
+    breakdown = bluesky.vote_breakdown(replies, fired, choice_map)
+
+    counts = {v["coord"]: v["votes"] for v in breakdown}
+    options = [{"label": label, "coord": coord, "votes": counts.get(coord, 0)}
+               for label, coord in zip("ABC", offered)]
     return {
         "available": True,
+        "options": options,
         "post_uri": uri,
         "post_url": _bsky_url(uri),
         "replies_seen": len(replies),
@@ -252,21 +279,6 @@ def api_status():
 @app.route("/api/v1/votes")
 def api_votes():
     return jsonify(live_votes(read_state()))
-
-
-@app.route("/api/v1/leaderboard")
-def api_leaderboard():
-    days = request.args.get("days", "7")
-    window = None if days in ("all", "0") else int(days)
-    limit = min(int(request.args.get("limit", "10")), 100)
-    conn = db.connect_readonly()
-    try:
-        # Same query the Bluesky leaderboard post uses.
-        return jsonify({"window": days,
-                        "entries": db.get_leaderboard_for(conn, days=window,
-                                                          limit=limit)})
-    finally:
-        conn.close()
 
 
 @app.route("/api/v1/log")
@@ -351,15 +363,13 @@ PAGE = """
   <div class="card"><h2>🔴 Team Red</h2><img id="rboard" alt="Red board"></div>
   <div class="card"><h2>🔵 Team Blue</h2><img id="bboard" alt="Blue board"></div>
 
-  <div class="card"><h2>Live votes</h2><div class="body" id="votes">…</div></div>
+  <div class="card"><h2>Live votes — A/B/C ballot</h2><div class="body" id="votes">…</div></div>
 
   <div class="card"><h2>Standings</h2><div class="body">
     <div class="grid2">
       <div><div class="muted">Record</div><div id="record"></div></div>
       <div><div class="muted">Ships left</div><div id="ships"></div></div>
     </div>
-    <div style="margin-top:12px" class="muted">Top gunners (7 days)</div>
-    <div id="lb"></div>
   </div></div>
 
   <div class="card" style="grid-column:1/-1"><h2>Log</h2>
@@ -406,35 +416,40 @@ async function refresh() {
     if (!v.available) {
       $('votes').innerHTML = `<span class="muted">${v.reason}</span>` +
         (v.post_url ? ` <a href="${v.post_url}" target="_blank">open post ↗</a>` : '');
-    } else if (!v.votes.length) {
-      $('votes').innerHTML = `<span class="muted">no valid votes yet — ` +
-        `${v.replies_seen} repl${v.replies_seen === 1 ? 'y' : 'ies'} seen. ` +
-        `AI will fire if none arrive.</span>` +
-        (v.post_url ? ` <a href="${v.post_url}" target="_blank">open post ↗</a>` : '');
     } else {
-      let h = '<table><tr><th>coord</th><th>votes</th><th>first called by</th></tr>';
-      v.votes.forEach((row, i) => {
-        h += `<tr class="${i === 0 ? 'lead' : ''}"><td class="big">${row.coord}</td>` +
-             `<td>${row.votes}</td><td class="muted">@${row.first_caller}</td></tr>`;
-      });
-      h += '</table>';
+      const opts = v.options || [];
+      const most = Math.max(0, ...opts.map(o => o.votes));
+      let h = '';
+      if (opts.length) {
+        h += '<table><tr><th></th><th>coord</th><th>votes</th></tr>';
+        opts.forEach(o => {
+          const lead = (most > 0 && o.votes === most) ? 'lead' : '';
+          h += `<tr class="${lead}"><td class="big">${o.label}</td>` +
+               `<td class="big">${o.coord}</td><td>${o.votes}</td></tr>`;
+        });
+        h += '</table>';
+      }
+      // Write-in coordinates still count; show any that aren't on the ballot.
+      const ballot = new Set(opts.map(o => o.coord));
+      const writeIns = (v.votes || []).filter(x => !ballot.has(x.coord));
+      if (writeIns.length) {
+        h += '<div class="muted" style="margin-top:10px">write-ins</div><table>';
+        writeIns.forEach(x => {
+          h += `<tr><td class="big">${x.coord}</td><td>${x.votes}</td>` +
+               `<td class="muted">@${x.first_caller}</td></tr>`;
+        });
+        h += '</table>';
+      }
+      if (!opts.length && !writeIns.length) {
+        h = `<span class="muted">no votes yet — ` +
+            `${v.replies_seen} repl${v.replies_seen === 1 ? 'y' : 'ies'} seen. ` +
+            `Option A fires if none arrive.</span>`;
+      }
       h += `<div class="muted" style="margin-top:8px">${v.valid_voters} voter(s), ` +
            `${v.replies_seen} repl(ies)` +
            (v.post_url ? ` · <a href="${v.post_url}" target="_blank">open post ↗</a>` : '') +
            `</div>`;
       $('votes').innerHTML = h;
-    }
-
-    const lb = await j('/api/v1/leaderboard?days=7&limit=8');
-    if (!lb.entries.length) {
-      $('lb').innerHTML = '<span class="muted">no votes recorded yet</span>';
-    } else {
-      let h = '<table><tr><th>#</th><th>handle</th><th>shots</th><th>hits</th><th>sunk</th></tr>';
-      lb.entries.forEach((e, i) => {
-        h += `<tr><td>${i + 1}</td><td>@${e.handle}</td><td>${e.calls}</td>` +
-             `<td>${e.hits}</td><td>${e.sinks}</td></tr>`;
-      });
-      $('lb').innerHTML = h + '</table>';
     }
 
     const lg = await j('/api/v1/log?lines=40');

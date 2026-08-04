@@ -301,7 +301,29 @@ def delete_posts(team: str, rkeys: list, on_progress=None) -> tuple:
 # letter (so "sea5" doesn't match) and not followed by another digit (so
 # "A55" and the "A1" inside "A100" don't match).
 _COORD_RE = re.compile(r"(?<![A-Za-z])([A-Ja-j])\s?[-,]?\s?(10|[1-9])(?!\d)")
-_OPTION_RE = re.compile(r"^\s*([ABCabc])(?:\s*$|[\s).:-])")
+
+# A/B/C choice matching, tried in this order. The whole difficulty is that
+# "a" is an ordinary English word — "a good shot" must not read as a vote for
+# option A — while "b" and "c" essentially never are. So a bare lowercase "a"
+# only counts with a stronger signal (alone, punctuated, or after a voting
+# word), whereas "b"/"c" are trusted at the start of a reply.
+_OPTION_PATTERNS = (
+    # 1. the whole reply is the letter: "a", "B", "c!", "b)"
+    re.compile(r"^\s*([ABCabc])\s*[^A-Za-z0-9]*$"),
+    # 2. the letter opens the reply and is punctuated: "a) yes", "b. go"
+    re.compile(r"^\s*([ABCabc])\s*[).:;,!—-]"),
+    # 3. after a voting word: "I vote b", "option C", "let's go with a"
+    re.compile(
+        r"\b(?:vote|votes|voting|option|choice|choose|pick|go|going)\b"
+        r"(?:\s+(?:for|with|on|is))?"
+        r"[^A-Za-z0-9]{0,4}([ABCabc])(?![A-Za-z0-9])",
+        re.IGNORECASE,
+    ),
+    # 4. b/c opening a sentence: "b please" (deliberately excludes "a")
+    re.compile(r"^\s*([BCbc])(?![A-Za-z0-9])"),
+    # 5. a standalone CAPITAL letter anywhere: "I think B", never "a shot"
+    re.compile(r"(?<![A-Za-z0-9])([ABC])(?![A-Za-z0-9])"),
+)
 
 
 def parse_coordinate(text: str) -> tuple | None:
@@ -310,6 +332,15 @@ def parse_coordinate(text: str) -> tuple | None:
     if not match:
         return None
     return match.group(1).upper(), int(match.group(2))
+
+
+def parse_option(text: str) -> str | None:
+    """Find an A/B/C choice in reply text, or None. Returns 'A', 'B' or 'C'."""
+    for pattern in _OPTION_PATTERNS:
+        match = pattern.search(text or "")
+        if match:
+            return match.group(1).upper()
+    return None
 
 
 def parse_vote_text(text: str, options: dict | None = None) -> tuple | None:
@@ -323,10 +354,8 @@ def parse_vote_text(text: str, options: dict | None = None) -> tuple | None:
         return coord
     if not options:
         return None
-    match = _OPTION_RE.search(text or "")
-    if not match:
-        return None
-    return options.get(match.group(1).upper())
+    label = parse_option(text)
+    return options.get(label) if label else None
 
 
 @dataclass

@@ -1,4 +1,4 @@
-"""SQLite persistence for game state, win/loss records, and voter stats."""
+"""SQLite persistence for game state, win/loss records, and posts."""
 
 from __future__ import annotations
 
@@ -47,24 +47,6 @@ CREATE TABLE IF NOT EXISTS win_loss (
     wins INTEGER DEFAULT 0,
     losses INTEGER DEFAULT 0
 );
-
--- One row per shot that a follower's vote actually decided. All
--- leaderboards derive from this, so there's a single source of truth.
-CREATE TABLE IF NOT EXISTS voter_calls (
-    id INTEGER PRIMARY KEY,
-    did TEXT,
-    handle TEXT,
-    team TEXT,
-    coord TEXT,
-    result TEXT,          -- 'hit' | 'miss' | 'sunk:ShipName'
-    votes INTEGER,
-    game_id INTEGER,
-    turn_number INTEGER,
-    called_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_voter_calls_called_at ON voter_calls (called_at);
-CREATE INDEX IF NOT EXISTS idx_voter_calls_did ON voter_calls (did);
 
 -- Every post the bot creates, so a reset can delete exactly the bot's own
 -- posts instead of indiscriminately emptying the account.
@@ -285,66 +267,6 @@ def get_record() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Voter stats
-# ---------------------------------------------------------------------------
-
-def record_call(did: str, handle: str, team: str, coord: str, result: str,
-                votes: int, game_id: int, turn_number: int) -> None:
-    """Log that this follower's coordinate was the shot actually fired."""
-    with _connect() as conn:
-        conn.execute(
-            """INSERT INTO voter_calls
-               (did, handle, team, coord, result, votes, game_id, turn_number)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (did, handle, team, coord, result, votes, game_id, turn_number),
-        )
-
-
-def get_leaderboard_for(conn: sqlite3.Connection, days: int | None = 7,
-                        limit: int = 5) -> list:
-    """Leaderboard query against a caller-supplied connection.
-
-    Split out so the dashboard can run it on a read-only connection while
-    still using the exact same SQL as the Bluesky leaderboard post — the
-    two can never disagree about what a 'top gunner' is.
-    """
-    where, params = "", []
-    if days is not None:
-        where = "WHERE called_at >= datetime('now', ?)"
-        params.append(f"-{int(days)} days")
-    params.append(limit)
-    rows = conn.execute(
-        f"""
-        SELECT did,
-               -- a handle can change; show the most recent one seen
-               (SELECT handle FROM voter_calls v2
-                 WHERE v2.did = v1.did
-                 ORDER BY called_at DESC LIMIT 1) AS handle,
-               COUNT(*) AS calls,
-               SUM(CASE WHEN result != 'miss' THEN 1 ELSE 0 END) AS hits,
-               SUM(CASE WHEN result LIKE 'sunk:%' THEN 1 ELSE 0 END) AS sinks
-        FROM voter_calls v1
-        {where}
-        GROUP BY did
-        ORDER BY sinks DESC, hits DESC, calls DESC
-        LIMIT ?
-        """,
-        params,
-    ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def get_leaderboard(days: int | None = 7, limit: int = 5) -> list:
-    """Top callers, ranked by ships sunk, then hits, then shots called.
-
-    `days=None` gives the all-time board. Each entry is
-    {'handle', 'did', 'calls', 'hits', 'sinks'}.
-    """
-    with _connect() as conn:
-        return get_leaderboard_for(conn, days=days, limit=limit)
-
-
-# ---------------------------------------------------------------------------
 # Post tracking (so a reset can delete precisely the bot's own posts)
 # ---------------------------------------------------------------------------
 
@@ -419,14 +341,13 @@ def reset_game_state() -> None:
 def reset_all(keep_record: bool = False) -> None:
     """Full wipe for a clean slate — the testing reset.
 
-    Clears the current game, game history, voter stats, and the post log.
+    Clears the current game, game history, and the post log.
     With `keep_record=False` (the default) the all-time W/L counters are
     zeroed too, so a first real game doesn't open with test scores.
     """
     with _connect() as conn:
         conn.execute("DELETE FROM game_state")
         conn.execute("DELETE FROM game_history")
-        conn.execute("DELETE FROM voter_calls")
         conn.execute("DELETE FROM posts")
         if not keep_record:
             conn.execute("UPDATE win_loss SET wins = 0, losses = 0")

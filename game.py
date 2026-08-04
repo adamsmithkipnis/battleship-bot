@@ -57,6 +57,11 @@ def index_to_coord(r: int, c: int) -> str:
     return f"{ROWS[r]}{c + 1}"
 
 
+def coord_from_string(coord: str) -> tuple:
+    """Convert 'A10' -> ('A', 10). Inverse of index_to_coord's format."""
+    return coord[0].upper(), int(coord[1:])
+
+
 def _empty_grid() -> list:
     return [[WATER] * SIZE for _ in range(SIZE)]
 

@@ -70,14 +70,11 @@ def _format_options(options: list) -> str:
 
 
 def _choice_map(options: list) -> dict:
+    """{'A': ('C', 2), ...} — what each offered letter actually fires at."""
     return {
-        label: _coord_from_text(coord)
+        label: game.coord_from_string(coord)
         for label, coord in zip(OPTION_LABELS, options)
     }
-
-
-def _coord_from_text(coord: str) -> tuple:
-    return coord[0], int(coord[1:])
 
 
 def _credit_line(vote) -> str:
@@ -293,7 +290,7 @@ def _game_tick() -> None:
                     vote.caller_handle or "unknown")
     else:
         if vote_options:
-            r, c = game.coord_to_index(*_coord_from_text(vote_options[0]))
+            r, c = game.coord_to_index(*game.coord_from_string(vote_options[0]))
             logger.info("Team %s move by AI fallback option A: %s", team,
                         vote_options[0])
         else:
@@ -383,14 +380,10 @@ def _game_tick() -> None:
     state.last_shot_result = result
     state.last_shot_ship = hit_ship or ""
 
-    # 5. Credit the caller and log their stats. Both are non-essential, so a
-    #    failure here must not roll back a turn that has already posted.
+    # 5. Reply to the follower whose choice was fired, so they get a
+    #    notification. Non-essential: a failure here must not roll back a
+    #    turn that has already posted.
     if vote is not None and vote.caller_did:
-        try:
-            db.record_call(vote.caller_did, vote.caller_handle, team, coord,
-                           result, vote.count, state.game_id, turn)
-        except Exception:
-            logger.exception("Failed to record voter stats")
         if vote.caller_uri and vote.caller_cid:
             try:
                 reply_uri = bluesky.post_reply(

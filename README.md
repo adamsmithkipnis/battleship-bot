@@ -7,14 +7,18 @@ chosen by followers voting in the replies.
 - [@battleshipblue](https://bsky.app/profile/battleshipblue.bsky.social) — Team Blue
 - [@battlelog](https://bsky.app/profile/battlelog.bsky.social) — neutral play-by-play
 
-Teams alternate on a stagger: with `TURN_MINUTES=10`, Red fires at 0:00, Blue at
-0:05, Red at 0:10. Each tick, the acting team reads the replies to its own most
-recent post, fires the most-voted coordinate, and posts an updated board. If no
-valid votes arrive, a hunt/target AI takes the shot and the post says so.
+Each turn the acting team posts three candidate shots — A, B and C — and
+followers reply with a letter. Direct coordinates ("D4") still count as
+write-in votes. The most-voted coordinate is fired; if nobody votes, option A
+is taken and the post says so.
 
-The follower who called the winning coordinate is named in the post and gets a
-reply crediting them. First to sink all five enemy ships wins; the bot announces
-the result with the all-time record, waits an hour, and starts a fresh game.
+Teams alternate on a stagger: with `TURN_MINUTES=60`, Red fires on the hour,
+Blue on the half hour, so each account posts hourly and both sides get an equal
+60-minute voting window. The follower whose choice was fired is named in the
+post and gets a reply crediting them. First to sink all five enemy ships wins;
+the bot announces the result, waits an hour, and starts a fresh game.
+
+`@battlelog` posts completed game results only.
 
 ## Layout
 
@@ -22,10 +26,10 @@ the result with the all-time record, waits an hour, and starts a fresh game.
 | --- | --- |
 | `main.py` | Orchestrator and APScheduler loop |
 | `game.py` | Battleship rules, ship placement, win detection (pure logic) |
-| `ai.py` | Fallback move logic (hunt/target) |
+| `ai.py` | Candidate-shot generation and fallback move logic (hunt/target) |
 | `renderer.py` | Board PNG generation and screen-reader alt text |
-| `bluesky.py` | AT Protocol wrapper, richtext facets, vote tallying, post deletion |
-| `db.py` | SQLite schema, game state, voter stats, reset helpers |
+| `bluesky.py` | AT Protocol wrapper, richtext facets, A/B/C vote parsing and tallying, post deletion |
+| `db.py` | SQLite schema, game state, post log, reset helpers |
 | `dashboard.py` | Read-only local web dashboard |
 | `reset.py` | Wipe posts and/or local data for a clean slate |
 | `com.battleship.bot.plist` | launchd config for the bot |
@@ -65,9 +69,9 @@ a power failure."
 python3 dashboard.py      # http://127.0.0.1:8765
 ```
 
-Shows both boards, the live vote tally with a countdown to when voting closes,
-whose turn it is, ships remaining, the win/loss record, the voter leaderboard,
-and a log tail.
+Shows both boards, the live A/B/C ballot with vote counts and a countdown to
+when voting closes, whose turn it is, ships remaining, the win/loss record, and
+a log tail. Write-in coordinates are listed separately from the ballot.
 
 It is strictly read-only: the database is opened with `PRAGMA query_only`, and
 the live tally is read from Bluesky's public AppView, so **it needs no
@@ -104,7 +108,7 @@ open with scores left over from testing.
 | `RED_HANDLE` / `RED_APP_PASSWORD` | Team Red credentials (same for `BLUE_`, `LOG_`) |
 | `DB_PATH` | Absolute path to the SQLite database |
 | `LOG_PATH` | Absolute path to the log file |
-| `TURN_MINUTES` | Minutes between a team's own turns (default 10); teams alternate on half of this |
+| `TURN_MINUTES` | Minutes between a team's own turns (default 60); teams alternate on half of this |
 | `RESTART_DELAY_SECONDS` | Pause between games (default 3600) |
 | `DASHBOARD_HOST` / `DASHBOARD_PORT` | Dashboard bind address (default `127.0.0.1:8765`) |
 
@@ -130,6 +134,12 @@ writes. Note that a `file:...?mode=ro` connection *fails* against a WAL database
 index — `PRAGMA query_only=1` is the working equivalent. Keep the database on
 local disk; WAL does not work over network filesystems.
 
-**Voter stats are an append-only event log** (`voter_calls`), so weekly,
-all-time, per-game, and per-player views are all derivable without schema
-changes. The weekly leaderboard posts from `@battlelog` on Sundays at 18:00.
+**Reading a vote is deliberately conservative.** "a" is an ordinary English
+word, so a bare lowercase `a` only counts as option A when it stands alone, is
+punctuated (`a)`), or follows a voting word ("I vote a"). `b` and `c` are
+trusted at the start of a reply, and a standalone capital letter counts
+anywhere. "a good shot would be nice" is not a vote.
+
+**Settings are read after `.env` loads.** `TURN_MINUTES` is module-level, so
+`load_dotenv()` has to run at import time — if it moves back inside `main()`,
+the default silently wins and `.env` is ignored.
