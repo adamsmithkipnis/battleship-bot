@@ -97,6 +97,9 @@ def main() -> int:
                         help="delete the accounts' posts on Bluesky")
     parser.add_argument("--db", action="store_true",
                         help="clear local game data (state, history, stats)")
+    parser.add_argument("--new-game", action="store_true",
+                        help="abandon the current game and start a fresh one, "
+                             "keeping the W/L record, history and posts")
     parser.add_argument("--all", action="store_true",
                         help="both --posts and --db")
     parser.add_argument("--keep-record", action="store_true",
@@ -111,7 +114,7 @@ def main() -> int:
 
     do_posts = args.posts or args.all
     do_db = args.db or args.all
-    if not (do_posts or do_db or args.dry_run):
+    if not (do_posts or do_db or args.dry_run or args.new_game):
         parser.print_help()
         return 1
 
@@ -119,6 +122,34 @@ def main() -> int:
     db.init_db()
 
     print("Battleship reset\n" + "=" * 40)
+
+    if args.new_game and not (do_posts or do_db):
+        # Cut the current game short, keeping everything else.
+        state = db.load_state()
+        if state is None:
+            print("No game in progress; nothing to abandon.")
+        else:
+            rec = db.get_record()
+            print(f"Current game {state.game_id} is at turn {state.turn_number}.")
+            print("Abandoning it. Neither side is credited with a win.")
+            print(f"Keeping the all-time record: "
+                  f"red {rec['red']['wins']}W {rec['red']['losses']}L, "
+                  f"blue {rec['blue']['wins']}W {rec['blue']['losses']}L")
+            print("Keeping game history and the post log. No posts are deleted.")
+            if not args.yes and not confirm(
+                    "End the current game and start a fresh one?", "new game"):
+                print("Aborted; nothing changed.")
+                return 1
+            db.abandon_game()
+            print(f"Game {state.game_id} abandoned.")
+        if args.restart:
+            print("Restarting the bot..." if start_bot()
+                  else "Could not restart the bot.")
+            print("A fresh game begins immediately on the running code.")
+        else:
+            print("\nRestart the bot to begin the next game:")
+            print("  launchctl kickstart -k gui/$(id -u)/com.battleship.bot")
+        return 0
     running = bot_is_running()
     print(f"Bot currently running: {'YES' if running else 'no'}")
 

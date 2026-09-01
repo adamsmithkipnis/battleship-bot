@@ -334,6 +334,19 @@ def forget_posts(uris: list) -> None:
 # Reset
 # ---------------------------------------------------------------------------
 
+def abandon_game() -> None:
+    """End the current game without crediting either side.
+
+    Used to cut a game short so a new one can start on new code. Neither
+    team gets a win, and the W/L record, game history and post log are all
+    left alone — only this game stops. The row itself is kept so the next
+    game continues the numbering instead of restarting at 1.
+    """
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE game_state SET status = 'abandoned' WHERE status = 'active'")
+
+
 def reset_game_state() -> None:
     """Forget the current game so the next start is from scratch.
 
