@@ -132,7 +132,7 @@ def build_turn_text(team: str, turn: int, shots: list, picks: list,
 
     head = f"Turn {turn} {EMOJI[team]} "
     body = f"{head}{incoming}\n{own}" if incoming else f"{head}{own}"
-    ask = (f"Reply a coordinate — our top {SHOTS_PER_TURN} fire next volley. "
+    ask = (f"Reply a coordinate — the {SHOTS_PER_TURN} most-voted all fire. "
            f"{TURN_MINUTES} min. {HASHTAG}")
     if suggestions:
         ask = f"Ideas: {_format_options(suggestions)}\n" + ask
@@ -458,8 +458,8 @@ def _start_new_game() -> None:
         return (f"⚓ NEW GAME — @battleshipred vs @battleshipblue!\n\n"
                 f"Ships are placed. {first}\n\n"
                 f"All-time: {record_line}\n\n"
-                f"Reply a coordinate (e.g. B7) — our top {SHOTS_PER_TURN} "
-                f"fire as one volley each turn.\n"
+                f"Reply a coordinate (e.g. B7) — the {SHOTS_PER_TURN} "
+                f"most-voted all fire, as one volley each turn.\n"
                 f"Ideas: {_format_options(options)} {HASHTAG}")
 
     try:
