@@ -40,6 +40,7 @@ app = Flask(__name__)
 SERVICE = "com.battleship.bot"
 PUBLIC_API = "https://public.api.bsky.app/xrpc/"
 TURN_MINUTES = int(os.environ.get("TURN_MINUTES", "60"))
+SHOTS_PER_TURN = int(os.environ.get("SHOTS_PER_TURN", "5"))
 TICK_SECONDS = TURN_MINUTES * 60 // 2
 
 _http = httpx.Client(timeout=15)
@@ -145,6 +146,7 @@ def read_state() -> dict:
                               if row["active_team"] == "red"
                               else row["blue_last_post_uri"]),
             "vote_options": _json_list(row, f"{row['active_team']}_vote_options"),
+            "last_volley": _json_list(row, "last_volley"),
             "record": record,
             "games_played": games,
             "posts": posts,
@@ -212,19 +214,15 @@ def live_votes(state: dict) -> dict:
                  for r in range(game.SIZE) for c in range(game.SIZE)
                  if grid[r][c] in (game.HIT, game.MISS)}
 
-    # Map the offered letters to coordinates so a reply of "B" counts here
-    # exactly as it will when the bot tallies at the end of the window.
-    offered = state.get("vote_options") or []
-    choice_map = {label: game.coord_from_string(coord)
-                  for label, coord in zip("ABC", offered)}
-    breakdown = bluesky.vote_breakdown(replies, fired, choice_map)
-
-    counts = {v["coord"]: v["votes"] for v in breakdown}
-    options = [{"label": label, "coord": coord, "votes": counts.get(coord, 0)}
-               for label, coord in zip("ABC", offered)]
+    breakdown = bluesky.vote_breakdown(replies, fired)
+    # The top SHOTS_PER_TURN cells all get fired, so mark the cut line —
+    # that, not a single winner, is what a voter wants to see.
+    for i, row in enumerate(breakdown):
+        row["firing"] = i < SHOTS_PER_TURN
     return {
         "available": True,
-        "options": options,
+        "shots_per_turn": SHOTS_PER_TURN,
+        "suggestions": state.get("vote_options") or [],
         "post_uri": uri,
         "post_url": _bsky_url(uri),
         "replies_seen": len(replies),
@@ -363,7 +361,7 @@ PAGE = """
   <div class="card"><h2>🔴 Team Red</h2><img id="rboard" alt="Red board"></div>
   <div class="card"><h2>🔵 Team Blue</h2><img id="bboard" alt="Blue board"></div>
 
-  <div class="card"><h2>Live votes — A/B/C ballot</h2><div class="body" id="votes">…</div></div>
+  <div class="card"><h2>Live votes — next volley</h2><div class="body" id="votes">…</div></div>
 
   <div class="card"><h2>Standings</h2><div class="body">
     <div class="grid2">
@@ -417,35 +415,29 @@ async function refresh() {
       $('votes').innerHTML = `<span class="muted">${v.reason}</span>` +
         (v.post_url ? ` <a href="${v.post_url}" target="_blank">open post ↗</a>` : '');
     } else {
-      const opts = v.options || [];
-      const most = Math.max(0, ...opts.map(o => o.votes));
+      const rows = v.votes || [];
+      const n = v.shots_per_turn || 5;
       let h = '';
-      if (opts.length) {
-        h += '<table><tr><th></th><th>coord</th><th>votes</th></tr>';
-        opts.forEach(o => {
-          const lead = (most > 0 && o.votes === most) ? 'lead' : '';
-          h += `<tr class="${lead}"><td class="big">${o.label}</td>` +
-               `<td class="big">${o.coord}</td><td>${o.votes}</td></tr>`;
+      if (rows.length) {
+        h += '<table><tr><th>coord</th><th>votes</th><th>first called by</th></tr>';
+        rows.forEach(row => {
+          h += `<tr class="${row.firing ? 'lead' : ''}"><td class="big">${row.coord}</td>` +
+               `<td>${row.votes}</td><td class="muted">@${row.first_caller}</td></tr>`;
         });
         h += '</table>';
-      }
-      // Write-in coordinates still count; show any that aren't on the ballot.
-      const ballot = new Set(opts.map(o => o.coord));
-      const writeIns = (v.votes || []).filter(x => !ballot.has(x.coord));
-      if (writeIns.length) {
-        h += '<div class="muted" style="margin-top:10px">write-ins</div><table>';
-        writeIns.forEach(x => {
-          h += `<tr><td class="big">${x.coord}</td><td>${x.votes}</td>` +
-               `<td class="muted">@${x.first_caller}</td></tr>`;
-        });
-        h += '</table>';
-      }
-      if (!opts.length && !writeIns.length) {
+        const firing = rows.filter(r => r.firing).length;
+        h += `<div class="muted" style="margin-top:8px">highlighted = will fire ` +
+             `(top ${n}); ${firing} of ${n} shots claimed by voters</div>`;
+      } else {
         h = `<span class="muted">no votes yet — ` +
             `${v.replies_seen} repl${v.replies_seen === 1 ? 'y' : 'ies'} seen. ` +
-            `Option A fires if none arrive.</span>`;
+            `The bot fills all ${n} shots if none arrive.</span>`;
       }
-      h += `<div class="muted" style="margin-top:8px">${v.valid_voters} voter(s), ` +
+      if ((v.suggestions || []).length) {
+        h += `<div class="muted" style="margin-top:6px">suggested: ` +
+             `${v.suggestions.join(' ')}</div>`;
+      }
+      h += `<div class="muted" style="margin-top:4px">${v.valid_voters} voter(s), ` +
            `${v.replies_seen} repl(ies)` +
            (v.post_url ? ` · <a href="${v.post_url}" target="_blank">open post ↗</a>` : '') +
            `</div>`;

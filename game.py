@@ -45,6 +45,9 @@ class GameState:
     last_shot_coord: str = ""
     last_shot_result: str = ""   # 'hit' | 'miss' | 'sunk:ShipName'
     last_shot_ship: str = ""     # ship struck, when the shot was a hit
+    # The whole previous volley, so the next post can report it:
+    # [{'coord': 'A1', 'result': 'miss', 'ship': ''}, ...]
+    last_volley: list = field(default_factory=list)
 
 
 def coord_to_index(row: str, col: int) -> tuple:

@@ -7,14 +7,17 @@ chosen by followers voting in the replies.
 - [@battleshipblue](https://bsky.app/profile/battleshipblue.bsky.social) — Team Blue
 - [@battlelog](https://bsky.app/profile/battlelog.bsky.social) — neutral play-by-play
 
-Each turn the acting team posts three candidate shots — A, B and C — and
-followers reply with a letter. Direct coordinates ("D4") still count as
-write-in votes. The most-voted coordinate is fired; if nobody votes, option A
-is taken and the post says so.
+Each turn a team fires a **volley of five shots**, and the five most-voted
+coordinates are all taken — so a follower whose cell places anywhere in the top
+five sees their shot fired, and everyone who lands a shot gets a reply saying
+what it did. Followers reply with any coordinate ("D4"), which lets them bracket
+a suspected ship rather than pick from a menu. The bot fills any shots the crowd
+didn't claim, and says how many were crowd-chosen.
 
 Teams alternate on a stagger: with `TURN_MINUTES=60`, Red fires on the hour,
 Blue on the half hour, so each account posts hourly and both sides get an equal
-60-minute voting window. The follower whose choice was fired is named in the
+60-minute voting window. Volley fire cuts a game from ~95 turns to ~20 — about
+nine hours, so a game starts and finishes within a day. The follower whose choice was fired is named in the
 post and gets a reply crediting them. First to sink all five enemy ships wins;
 the bot announces the result, waits an hour, and starts a fresh game.
 
@@ -109,6 +112,8 @@ open with scores left over from testing.
 | `DB_PATH` | Absolute path to the SQLite database |
 | `LOG_PATH` | Absolute path to the log file |
 | `TURN_MINUTES` | Minutes between a team's own turns (default 60); teams alternate on half of this |
+| `SHOTS_PER_TURN` | Shots per side per turn, and how many top-voted cells fire (default 5) |
+| `FILL_VOLLEY` | `1` = AI fills unclaimed shots; `0` = fire only what was voted |
 | `RESTART_DELAY_SECONDS` | Pause between games (default 3600) |
 | `DASHBOARD_HOST` / `DASHBOARD_PORT` | Dashboard bind address (default `127.0.0.1:8765`) |
 
@@ -133,6 +138,18 @@ writes. Note that a `file:...?mode=ro` connection *fails* against a WAL database
 ("unable to open database file") because it cannot create the shared-memory
 index — `PRAGMA query_only=1` is the working equivalent. Keep the database on
 local disk; WAL does not work over network filesystems.
+
+**Fixed volleys, not classic Salvo.** Canonical Salvo fires one shot per
+surviving ship, which starves the leading side exactly when it needs to finish
+and turns 9% of games into blowouts. A fixed five-shot volley simulated faster
+*and* closer than both Salvo and single fire, so the house rule wins on both
+counts.
+
+**Cells that cannot hold a ship are never fired at.** If no run of L open cells
+(L = the smallest ship still afloat) passes through a cell, nothing can be
+there. That subsumes the "four misses in a diamond" rule. Hunting also only
+considers cells where `(row + col) % L == 0`, since every L-length ship covers
+exactly one of them.
 
 **Reading a vote is deliberately conservative.** "a" is an ordinary English
 word, so a bare lowercase `a` only counts as option A when it stands alone, is

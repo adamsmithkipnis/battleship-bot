@@ -39,11 +39,22 @@ logger = logging.getLogger("battleship")
 TURN_MINUTES = int(os.environ.get("TURN_MINUTES", "60"))
 TICK_SECONDS = TURN_MINUTES * 60 // 2
 
+# Volley fire: each side fires this many shots per turn, and the crowd's
+# top SHOTS_PER_TURN coordinates are all taken — so a follower whose cell
+# places anywhere in the top five still sees their shot fired. Held fixed
+# rather than decaying with surviving ships (classic Salvo): simulation
+# put fixed volleys ahead of Salvo on both game length and closeness,
+# because Salvo starves the leading side exactly when it needs to finish.
+SHOTS_PER_TURN = int(os.environ.get("SHOTS_PER_TURN", "5"))
+# When the crowd names fewer cells than that, let the AI fill the rest.
+FILL_VOLLEY = os.environ.get("FILL_VOLLEY", "1") not in ("0", "false", "no")
+
 HASHTAG = "#Battleship"
 EMOJI = {"red": "🔴", "blue": "🔵"}
 HANDLE = {"red": "@battleshipred", "blue": "@battleshipblue"}
 TEAM_NAME = {"red": "Team Red", "blue": "Team Blue"}
-OPTION_LABELS = "ABC"
+# How many suggested cells to print under each post.
+SUGGESTIONS = 3
 
 scheduler = BlockingScheduler()
 
@@ -63,67 +74,75 @@ def _record_line() -> str:
 
 
 def _format_options(options: list) -> str:
-    return "\n".join(
-        f"{label}) {coord}"
-        for label, coord in zip(OPTION_LABELS, options)
-    )
+    """Suggested cells, shown as a hint rather than a ballot — replies are
+    free coordinates so followers can bracket a target themselves."""
+    return " ".join(options)
 
 
-def _choice_map(options: list) -> dict:
-    """{'A': ('C', 2), ...} — what each offered letter actually fires at."""
-    return {
-        label: game.coord_from_string(coord)
-        for label, coord in zip(OPTION_LABELS, options)
-    }
+def _format_options(options: list) -> str:
+    """Suggested cells, shown as a hint rather than a ballot — replies are
+    free coordinates so followers can bracket a target themselves."""
+    return " ".join(options)
 
 
-def _credit_line(vote) -> str:
-    """Tell followers whether the crowd or the AI picked this shot.
+def _sunk_names(shots: list) -> list:
+    return [s["ship"] for s in shots if str(s["result"]).startswith("sunk:")]
 
-    Naming the caller is the point: it makes a follower's influence
-    visible to everyone, and the matching reply notifies them directly.
+
+def build_incoming_line(opponent: str, volley: list) -> str:
+    """Summarise the opponent's last volley.
+
+    Their individual coordinates are visible on the board image, so this
+    reports the damage rather than listing every cell — which is what has
+    to fit in the post alongside our own volley.
     """
-    if vote is None:
-        return "🤖 No votes came in — we auto-fired."
-    if vote.caller_handle:
-        choice = f" option {vote.choice_label}," if vote.choice_label else ""
-        return (f"🫡 @{vote.caller_handle} took command:{choice} "
-                f"({vote.count} of {vote.total_voters} votes)")
-    return f"🎯 Crowd pick: {vote.count} of {vote.total_voters} votes"
-
-
-def build_incoming_line(opponent: str, coord: str, result: str,
-                        ship: str) -> str:
-    """What the opponent did to us on the previous tick.
-
-    Because only the acting team posts, this is how a team's followers
-    learn about the shot they took while their account was quiet.
-    """
-    prefix = f"Incoming from {HANDLE[opponent]}: {coord} —"
-    if result == "miss":
-        return f"{prefix} Miss."
-    if result.startswith("sunk:"):
-        return f"{prefix} HIT, our {ship} is sunk!"
-    return f"{prefix} HIT on our {ship}."
-
-
-def build_turn_text(team: str, turn: int, coord: str, result: str,
-                    sunk_ship: str | None, vote, options: list,
-                    incoming: str = "") -> str:
-    """The acting team's post: what happened to us, then our shot."""
-    if result == "miss":
-        own = f"We fired {coord} — Miss."
-    elif sunk_ship:
-        own = f"We fired {coord} — HIT! Their {sunk_ship} is sunk!"
+    hits = sum(1 for s in volley if s["result"] != "miss")
+    sunk = _sunk_names(volley)
+    line = f"Incoming from {HANDLE[opponent]}: {len(volley)} shots, {hits} hit"
+    if hits != 1:
+        line += "s"
+    if sunk:
+        line += f" — our {_join(sunk)} " + ("is" if len(sunk) == 1 else "are") + " sunk!"
     else:
-        own = f"We fired {coord} — HIT!"
+        line += "."
+    return line
+
+
+def _join(names: list) -> str:
+    if len(names) <= 1:
+        return names[0] if names else ""
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def build_turn_text(team: str, turn: int, shots: list, picks: list,
+                    voted_count: int, incoming: str = "",
+                    suggestions: list = ()) -> str:
+    """The acting team's post: what hit us, our volley, and the next ask."""
+    fired = " ".join(s["coord"] for s in shots)
+    hits = [s["coord"] for s in shots if s["result"] != "miss"]
+    sunk = _sunk_names(shots)
+    own = f"We fired {fired}"
+    if hits:
+        own += f" — hit on {_join(hits)}!"
+        if sunk:
+            own += f" Their {_join(sunk)} " + ("is" if len(sunk) == 1 else "are") + " sunk!"
+    else:
+        own += " — all misses."
+
+    if voted_count and picks:
+        voters = picks[0].total_voters
+        credit = (f"🫡 {voted_count} of {len(shots)} shots called by "
+                  f"{voters} voter" + ("" if voters == 1 else "s"))
+    else:
+        credit = "🤖 No votes came in — we picked our own."
 
     head = f"Turn {turn} {EMOJI[team]} "
     body = f"{head}{incoming}\n{own}" if incoming else f"{head}{own}"
-    return (f"{body}\n{_credit_line(vote)}\n\n"
-            f"Next shot — reply A, B, or C:\n"
-            f"{_format_options(options)}\n"
-            f"{TURN_MINUTES} min. {HASHTAG}")
+    ask = (f"Reply a coordinate — our top {SHOTS_PER_TURN} fire next volley. "
+           f"{TURN_MINUTES} min. {HASHTAG}")
+    if suggestions:
+        ask = f"Ideas: {_format_options(suggestions)}\n" + ask
+    return f"{body}\n{credit}\n{ask}"
 
 
 def build_credit_reply(coord: str, result: str, sunk_ship: str | None,
@@ -131,13 +150,12 @@ def build_credit_reply(coord: str, result: str, sunk_ship: str | None,
     """Reply sent to the follower whose coordinate was fired."""
     if result == "miss":
         outcome = "a miss"
-    elif sunk_ship:
+    elif sunk_ship and str(sunk_ship).strip():
         outcome = f"a HIT — you sank their {sunk_ship}!"
     else:
         outcome = "a HIT!"
-    choice = f" option {vote.choice_label}" if vote.choice_label else ""
-    return (f"🎯 Your call{choice}. We fired {coord} on turn {turn} — {outcome}\n\n"
-            f"({vote.count} of {vote.total_voters} votes) {HASHTAG}")
+    return (f"🎯 Your call. We fired {coord} in our turn {turn} volley — "
+            f"{outcome}\n\n({vote.count} of {vote.total_voters} votes) {HASHTAG}")
 
 
 def build_win_text(winner: str, turns: int) -> str:
@@ -181,11 +199,11 @@ def _render_for(state: GameState, team: str) -> tuple:
 
 
 def _shot_options(state: GameState, team: str) -> list:
-    """Three legal coordinates for the team's followers to vote on."""
+    """A few legal cells to suggest under the post."""
     _, _, firing, opp_ships = _views(state, team)
     return [
         game.index_to_coord(r, c)
-        for r, c in ai.choose_options(firing, opp_ships, len(OPTION_LABELS))
+        for r, c in ai.choose_volley(firing, opp_ships, SUGGESTIONS)
     ]
 
 
@@ -276,60 +294,60 @@ def _game_tick() -> None:
                 else state.blue_last_post_uri)
     vote_options = _vote_options_for(state, team)
 
-    # 1. Collect and tally votes from the acting team's latest post — the
-    #    post that has been up for TURN_MINUTES asking for exactly this.
-    vote = bluesky.tally_votes(_fetch_replies(vote_uri),
-                               _already_fired(state, team),
-                               options=_choice_map(vote_options))
+    # 1. Collect votes from the acting team's latest post — the post that
+    #    has been up for TURN_MINUTES asking for exactly this volley.
+    picks = bluesky.top_votes(_fetch_replies(vote_uri),
+                              _already_fired(state, team),
+                              SHOTS_PER_TURN)
 
-    if vote is not None:
-        row_letter, col = vote.coord
-        r, c = game.coord_to_index(row_letter, col)
-        logger.info("Team %s move by vote: %s%d (%d of %d votes, called by %s)",
-                    team, row_letter, col, vote.count, vote.total_voters,
-                    vote.caller_handle or "unknown")
-    else:
-        if vote_options:
-            r, c = game.coord_to_index(*game.coord_from_string(vote_options[0]))
-            logger.info("Team %s move by AI fallback option A: %s", team,
-                        vote_options[0])
-        else:
-            _, _, firing_view, opp_ships = _views(state, team)
-            r, c = ai.choose_move(firing_view, opp_ships)
-            logger.info("Team %s move by AI fallback: %s", team,
-                        game.index_to_coord(r, c))
+    _, _, firing_view, opp_ships = _views(state, team)
+    cells = [game.coord_to_index(*p.coord) for p in picks]
+    voted_count = len(cells)
 
-    coord = game.index_to_coord(r, c)
+    # The crowd's choices fire first; the AI fills any remaining shots so a
+    # quiet hour still advances the game. Set FILL_VOLLEY=0 to fire only
+    # what was actually voted for.
+    if FILL_VOLLEY and len(cells) < SHOTS_PER_TURN:
+        cells += ai.choose_volley(firing_view, opp_ships,
+                                  SHOTS_PER_TURN - len(cells), exclude=cells)
+    if not cells:
+        cells = ai.choose_volley(firing_view, opp_ships, 1)
+
     turn = state.turn_number
+    logger.info("Team %s volley: %d shot(s), %d from %d voter(s)", team,
+                len(cells), voted_count,
+                picks[0].total_voters if picks else 0)
 
-    # The opponent's shot from the previous tick, reported in this post
+    # The opponent's volley from the previous tick, reported in this post
     # before it gets overwritten below.
     incoming = ""
-    if state.last_shot_team == opponent and state.last_shot_coord:
-        incoming = build_incoming_line(opponent, state.last_shot_coord,
-                                       state.last_shot_result,
-                                       state.last_shot_ship)
+    if state.last_shot_team == opponent and state.last_volley:
+        incoming = build_incoming_line(opponent, state.last_volley)
 
-    # 2. Apply the shot.
-    state, result = game.fire(state, team, r, c)
-    if result == "already_fired":
-        # Shouldn't happen (votes and AI both skip fired cells), but if it
-        # does, skip this tick rather than posting a bogus update.
-        logger.error("Duplicate shot at %s by team %s; skipping tick", coord, team)
+    # 2. Fire the volley, stopping early if the fleet is already sunk.
+    shots, won = [], False
+    for (r, c) in cells:
+        state, result = game.fire(state, team, r, c)
+        if result == "already_fired":
+            continue
+        ship_name = ""
+        if result != "miss":
+            target = state.blue_ships if team == "red" else state.red_ships
+            for ship in target:
+                if (r, c) in [tuple(cell) for cell in ship["cells"]]:
+                    ship_name = ship["name"]
+                    break
+        shots.append({"coord": game.index_to_coord(r, c),
+                      "result": result, "ship": ship_name})
+        if game.check_win(state, team):
+            won = True
+            break
+
+    if not shots:
+        logger.error("Team %s volley hit no new cells; skipping tick", team)
         return
 
-    sunk_ship = result.split(":", 1)[1] if result.startswith("sunk:") else None
-    is_hit = result != "miss"
-    hit_ship = None
-    if is_hit:
-        target_ships = state.blue_ships if team == "red" else state.red_ships
-        for ship in target_ships:
-            if (r, c) in [tuple(cell) for cell in ship["cells"]]:
-                hit_ship = ship["name"]
-                break
-
     # 3. Win check.
-    won = is_hit and game.check_win(state, team)
     if won:
         state.status = f"{team}_won"
         db.record_win(team, turn, state.game_id)
@@ -339,10 +357,9 @@ def _game_tick() -> None:
     #    the same post's replies and retries the turn.
     #    Normally only the acting team posts, which is what staggers the two
     #    accounts. A win is the exception: both accounts announce the result.
-    extra = {}
-    if vote is not None and vote.caller_handle and vote.caller_did:
-        # The credited handle needs its DID to become a clickable mention.
-        extra[vote.caller_handle] = vote.caller_did
+    # Every credited handle needs its DID to become a clickable mention.
+    extra = {p.caller_handle: p.caller_did for p in picks
+             if p.caller_handle and p.caller_did}
 
     try:
         if won:
@@ -363,8 +380,8 @@ def _game_tick() -> None:
             next_options = _shot_options(state, team)
             _set_vote_options(state, team, next_options)
             img, alt = _render_for(state, team)
-            text = build_turn_text(team, turn, coord, result, sunk_ship,
-                                   vote, next_options, incoming)
+            text = build_turn_text(team, turn, shots, picks, voted_count,
+                                   incoming, next_options)
             uri = _post_image(team, text, img, alt, "turn", state.game_id,
                               turn, extra_dids=extra)
             if team == "red":
@@ -376,25 +393,34 @@ def _game_tick() -> None:
         return
 
     state.last_shot_team = team
-    state.last_shot_coord = coord
-    state.last_shot_result = result
-    state.last_shot_ship = hit_ship or ""
+    state.last_volley = shots
+    # Kept in step for anything still reading the single-shot fields.
+    last = shots[-1]
+    state.last_shot_coord = last["coord"]
+    state.last_shot_result = last["result"]
+    state.last_shot_ship = last["ship"]
 
-    # 5. Reply to the follower whose choice was fired, so they get a
-    #    notification. Non-essential: a failure here must not roll back a
+    # 5. Reply to every follower whose cell was fired, so each of them gets
+    #    a notification. Non-essential: failures here must not roll back a
     #    turn that has already posted.
-    if vote is not None and vote.caller_did:
-        if vote.caller_uri and vote.caller_cid:
-            try:
-                reply_uri = bluesky.post_reply(
-                    team,
-                    build_credit_reply(coord, result, sunk_ship, turn, vote),
-                    parent_uri=vote.caller_uri, parent_cid=vote.caller_cid,
-                    root_uri=vote.root_uri, root_cid=vote.root_cid,
-                )
-                _remember(team, reply_uri, "credit", state.game_id, turn)
-            except Exception:
-                logger.exception("Failed to post credit reply")
+    by_coord = {s["coord"]: s for s in shots}
+    for pick in picks:
+        coord = f"{pick.coord[0]}{pick.coord[1]}"
+        shot = by_coord.get(coord)
+        if shot is None or not (pick.caller_uri and pick.caller_cid):
+            continue
+        try:
+            reply_uri = bluesky.post_reply(
+                team,
+                build_credit_reply(coord, shot["result"], shot["ship"] or None,
+                                   turn, pick),
+                parent_uri=pick.caller_uri, parent_cid=pick.caller_cid,
+                root_uri=pick.root_uri, root_cid=pick.root_cid,
+            )
+            _remember(team, reply_uri, "credit", state.game_id, turn)
+        except Exception:
+            logger.exception("Failed to post credit reply to %s",
+                             pick.caller_handle)
 
     # 6. Persist and hand the turn over.
     if not won:
@@ -436,9 +462,9 @@ def _start_new_game() -> None:
         return (f"⚓ NEW GAME — @battleshipred vs @battleshipblue!\n\n"
                 f"Ships are placed. {first}\n\n"
                 f"All-time: {record_line}\n\n"
-                f"First shot — reply A, B, or C:\n"
-                f"{_format_options(options)}\n"
-                f"{HASHTAG}")
+                f"Reply a coordinate (e.g. B7) — our top {SHOTS_PER_TURN} "
+                f"fire as one volley each turn.\n"
+                f"Ideas: {_format_options(options)} {HASHTAG}")
 
     try:
         red_img, red_alt = _render_for(state, "red")

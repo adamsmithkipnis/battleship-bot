@@ -426,26 +426,58 @@ def vote_breakdown(replies: list, already_fired: set,
     return out
 
 
+def top_votes(replies: list, already_fired: set, count: int,
+              options: dict | None = None) -> list:
+    """The `count` most-voted coordinates, best first.
+
+    Used for volley fire: every one of these is fired, so a follower whose
+    cell places anywhere in the top `count` still sees their shot taken.
+    Ties break toward whoever called the coordinate first.
+    """
+    votes, first, labels = collect_votes(replies, already_fired, options)
+    if not votes:
+        return []
+
+    total = len(votes)
+    order = {}
+    for index, reply in enumerate(sorted(replies, key=_created_at)):
+        coord = None
+        try:
+            coord = parse_vote_text(reply.record.text, options)
+        except AttributeError:
+            pass
+        if coord is not None and coord not in order:
+            order[coord] = index
+
+    ranked = sorted(Counter(votes.values()).items(),
+                    key=lambda kv: (-kv[1], order.get(kv[0], 1 << 30)))
+
+    out = []
+    for coord, tally in ranked[:count]:
+        result = VoteResult(coord=coord, count=tally, total_voters=total)
+        result.choice_label = labels.get(coord, "")
+        _attach_caller(result, first.get(coord))
+        out.append(result)
+    return out
+
+
+def _attach_caller(result: "VoteResult", caller) -> None:
+    """Record who called this coordinate first, so they can be credited."""
+    if caller is None:
+        return
+    result.caller_did = getattr(caller.author, "did", "") or ""
+    result.caller_handle = getattr(caller.author, "handle", "") or ""
+    result.caller_uri = getattr(caller, "uri", "") or ""
+    result.caller_cid = getattr(caller, "cid", "") or ""
+    # Prefer the reply's own thread root so a credit reply threads
+    # correctly; fall back to the reply itself if it isn't exposed.
+    root = getattr(getattr(caller.record, "reply", None), "root", None)
+    result.root_uri = getattr(root, "uri", "") or result.caller_uri
+    result.root_cid = getattr(root, "cid", "") or result.caller_cid
+
+
 def tally_votes(replies: list, already_fired: set,
                 options: dict | None = None) -> VoteResult | None:
     """The winning coordinate, or None when no valid votes were cast."""
-    votes, first, labels = collect_votes(replies, already_fired, options)
-    if not votes:
-        return None
-
-    coord, count = Counter(votes.values()).most_common(1)[0]
-    result = VoteResult(coord=coord, count=count, total_voters=len(votes))
-    result.choice_label = labels.get(coord, "")
-
-    caller = first.get(coord)
-    if caller is not None:
-        result.caller_did = getattr(caller.author, "did", "") or ""
-        result.caller_handle = getattr(caller.author, "handle", "") or ""
-        result.caller_uri = getattr(caller, "uri", "") or ""
-        result.caller_cid = getattr(caller, "cid", "") or ""
-        # Prefer the reply's own thread root so the credit reply threads
-        # correctly; fall back to the reply itself if it isn't exposed.
-        root = getattr(getattr(caller.record, "reply", None), "root", None)
-        result.root_uri = getattr(root, "uri", "") or result.caller_uri
-        result.root_cid = getattr(root, "cid", "") or result.caller_cid
-    return result
+    picks = top_votes(replies, already_fired, 1, options)
+    return picks[0] if picks else None

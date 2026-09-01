@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS game_state (
     last_shot_coord TEXT,
     last_shot_result TEXT,
     last_shot_ship TEXT,
+    last_volley TEXT,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -75,6 +76,7 @@ _ADDED_COLUMNS = {
         ("last_shot_ship", "TEXT"),
         ("red_vote_options", "TEXT"),
         ("blue_vote_options", "TEXT"),
+        ("last_volley", "TEXT"),
     ],
 }
 
@@ -141,8 +143,8 @@ def save_state(state: GameState) -> None:
                 red_last_post_uri, blue_last_post_uri, log_last_post_uri,
                 red_vote_options, blue_vote_options,
                 last_shot_team, last_shot_coord, last_shot_result,
-                last_shot_ship, updated_at
-            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                last_shot_ship, last_volley, updated_at
+            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                       CURRENT_TIMESTAMP)
             ON CONFLICT(id) DO UPDATE SET
                 game_id=excluded.game_id,
@@ -162,6 +164,7 @@ def save_state(state: GameState) -> None:
                 last_shot_coord=excluded.last_shot_coord,
                 last_shot_result=excluded.last_shot_result,
                 last_shot_ship=excluded.last_shot_ship,
+                last_volley=excluded.last_volley,
                 updated_at=CURRENT_TIMESTAMP
             """,
             (
@@ -182,6 +185,7 @@ def save_state(state: GameState) -> None:
                 state.last_shot_coord,
                 state.last_shot_result,
                 state.last_shot_ship,
+                json.dumps(state.last_volley),
             ),
         )
 
@@ -241,6 +245,7 @@ def load_state() -> GameState | None:
         last_shot_coord=_col("last_shot_coord"),
         last_shot_result=_col("last_shot_result"),
         last_shot_ship=_col("last_shot_ship"),
+        last_volley=_json_list("last_volley"),
     )
 
 
