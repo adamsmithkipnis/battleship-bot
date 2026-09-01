@@ -439,18 +439,11 @@ def top_votes(replies: list, already_fired: set, count: int,
         return []
 
     total = len(votes)
-    order = {}
-    for index, reply in enumerate(sorted(replies, key=_created_at)):
-        coord = None
-        try:
-            coord = parse_vote_text(reply.record.text, options)
-        except AttributeError:
-            pass
-        if coord is not None and coord not in order:
-            order[coord] = index
-
+    # Ties break toward whoever called the coordinate first, using the
+    # first *counted* reply — a reply that was filtered out (a repeat
+    # voter, an already-fired cell) must not pull a coordinate earlier.
     ranked = sorted(Counter(votes.values()).items(),
-                    key=lambda kv: (-kv[1], order.get(kv[0], 1 << 30)))
+                    key=lambda kv: (-kv[1], _created_at(first[kv[0]])))
 
     out = []
     for coord, tally in ranked[:count]:

@@ -79,12 +79,6 @@ def _format_options(options: list) -> str:
     return " ".join(options)
 
 
-def _format_options(options: list) -> str:
-    """Suggested cells, shown as a hint rather than a ballot — replies are
-    free coordinates so followers can bracket a target themselves."""
-    return " ".join(options)
-
-
 def _sunk_names(shots: list) -> list:
     return [s["ship"] for s in shots if str(s["result"]).startswith("sunk:")]
 
@@ -400,9 +394,17 @@ def _game_tick() -> None:
     state.last_shot_result = last["result"]
     state.last_shot_ship = last["ship"]
 
-    # 5. Reply to every follower whose cell was fired, so each of them gets
-    #    a notification. Non-essential: failures here must not roll back a
-    #    turn that has already posted.
+    # 5. Persist immediately. The public post has already gone out, so if
+    #    anything below dies the turn must NOT be replayed — that would
+    #    post the same turn twice. A missed credit reply is far cheaper.
+    if not won:
+        state.active_team = opponent
+        state.turn_number = turn + 1
+    db.save_state(state)
+
+    # 6. Credit every follower whose cell was fired, so each gets a
+    #    notification. Strictly best-effort, and deliberately after the
+    #    save above.
     by_coord = {s["coord"]: s for s in shots}
     for pick in picks:
         coord = f"{pick.coord[0]}{pick.coord[1]}"
@@ -421,12 +423,6 @@ def _game_tick() -> None:
         except Exception:
             logger.exception("Failed to post credit reply to %s",
                              pick.caller_handle)
-
-    # 6. Persist and hand the turn over.
-    if not won:
-        state.active_team = opponent
-        state.turn_number = turn + 1
-    db.save_state(state)
 
     if won:
         delay = int(os.environ.get("RESTART_DELAY_SECONDS", "3600"))
